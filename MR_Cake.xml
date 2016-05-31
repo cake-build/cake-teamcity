@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<meta-runner name="Cake">
+  <description>Execute Cake</description>
+  <settings>
+    <parameters>
+      <param name="mr.Cake.script" value="" spec="text description='The location of the Cake Script, relative to the root folder' display='normal' label='Cake Script:'" />
+      <param name="mr.Cake.target" value="" spec="text description='The name of the Target within the Cake Script to execute' display='normal' label='Target:'" />
+      <param name="mr.Cake.verbosity" value="" spec="select data_1='Quiet' data_3='Minimal' data_5='Normal' data_7='Verbose' data_9='Diagnostic' description='The logging level for the Cake Script' display='normal' label='Verbosity:'" />
+      <param name="mr.Cake.arguments" value="" spec="text description='Additional arguments to pass to Cake Script' display='normal' label='Cake Arguments:'" />
+    </parameters>
+    <build-runners>
+      <runner name="GitVersion" type="jetbrains_powershell">
+        <parameters>
+          <param name="jetbrains_powershell_execution" value="PS1" />
+          <param name="jetbrains_powershell_noprofile" value="true" />
+          <param name="jetbrains_powershell_errorToError" value="error" />
+          <param name="jetbrains_powershell_script_mode" value="CODE" />
+          <param name="jetbrains_powershell_bitness" value="x86" />
+          <param name="teamcity.step.mode" value="default" />
+          <param name="jetbrains_powershell_script_code"><![CDATA[[CmdletBinding()]
+Param(
+    [string]$script,
+    [string]$target,
+    [string]$verbosity,
+    [string]$arguments
+)
+
+Write-Verbose "Entering script $MyInvocation.MyCommand.Name";
+Write-Verbose "Parameter Values";
+foreach($key in $PSBoundParameters.Keys)
+{
+    Write-Verbose ($key + ' = ' + $PSBoundParameters[$key]);
+}
+
+$repositoryPath = "%teamcity.build.workingDir%";
+$toolsPath = Join-Path $repositoryPath "tools";
+$packagePath = Join-Path $toolsPath "packages.config";
+$cakePath = Join-Path $toolsPath "Cake/Cake.exe";
+$nuGetPath = Join-Path $toolsPath "nuget.exe";
+
+# Check if there's a tools directory.
+if (!(Test-Path $toolsPath)) {
+    Write-Host "Creating tools directory...";
+    New-Item -Path $toolsPath -Type directory | out-null;
+    if (!(Test-Path $toolsPath)) {
+        Throw "Could not create tools directory.";
+    }
+}
+
+# Make sure NuGet exist.
+if (!(Test-Path $nuGetPath)) {
+  # Download NuGet.exe.
+  Write-Verbose "Downloading nuget.exe...";
+  (New-Object System.Net.WebClient).DownloadFile("http://dist.nuget.org/win-x86-commandline/latest/nuget.exe", $nuGetPath);
+  # Make sure it was properly downloaded.
+  if (!(Test-Path $nuGetPath)) {
+      Throw "Could not find nuget.exe";
+  }
+}
+
+# Install prereqs from NuGet.
+Push-Location;
+Set-Location $toolsPath;
+if ((Test-Path $packagePath)) {
+  # Install tools in packages.config.
+  Write-Host "Restoring packages...";
+  Invoke-Expression "$nuGetPath install `"$packagePath`" -ExcludeVersion -OutputDirectory `"$toolsPath`"";
+}
+if (!(Test-Path $cakePath)) {
+  # Install Cake if not part of packages.config.
+  Write-Host "Installing Cake...";
+  Invoke-Expression "$nuGetPath install Cake -ExcludeVersion -OutputDirectory `"$toolsPath`"";
+}
+Pop-Location;
+
+# Make sure that Cake has been installed.
+if (!(Test-Path $cakePath)) {
+    Throw "Could not find Cake.exe at $cakePath";
+}
+
+# Start Cake
+Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" %mr.Cake.arguments%";]]></param>
+        </parameters>
+      </runner>
+    </build-runners>
+    <requirements />
+  </settings>
+</meta-runner>
