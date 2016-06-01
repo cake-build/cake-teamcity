@@ -9,7 +9,7 @@
       <param name="mr.Cake.arguments" value="" spec="text description='Additional arguments to pass to Cake Script' display='normal' label='Cake Arguments:'" />
     </parameters>
     <build-runners>
-      <runner name="GitVersion" type="jetbrains_powershell">
+      <runner name="Cake" type="jetbrains_powershell">
         <parameters>
           <param name="jetbrains_powershell_execution" value="PS1" />
           <param name="jetbrains_powershell_noprofile" value="true" />
