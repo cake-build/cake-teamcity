@@ -79,7 +79,8 @@ if (!(Test-Path $cakePath)) {
 }
 
 # Start Cake
-Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" %mr.Cake.arguments%";]]></param>
+Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" -msBuildLogger=`"JetBrains.BuildServer.MSBuildLoggers.MSBuildLogger,%teamcity.dotnet.msbuild.extensions4.0%`" %mr.Cake.arguments%";]]></param>
+
         </parameters>
       </runner>
     </build-runners>
