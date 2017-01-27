@@ -79,7 +79,7 @@ if (!(Test-Path $cakePath)) {
 }
 
 # Start Cake
-Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" %mr.Cake.arguments%";]]></param>
+Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" %mr.Cake.arguments%";exit $LASTEXITCODE;]]></param>
         </parameters>
       </runner>
     </build-runners>
