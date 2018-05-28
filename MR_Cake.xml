@@ -3,9 +3,12 @@
   <description>Execute Cake</description>
   <settings>
     <parameters>
-      <param name="mr.Cake.script" value="" spec="text description='The location of the Cake Script, relative to the root folder' display='normal' label='Cake Script:'" />
-      <param name="mr.Cake.target" value="" spec="text description='The name of the Target within the Cake Script to execute' display='normal' label='Target:'" />
-      <param name="mr.Cake.verbosity" value="" spec="select data_1='Quiet' data_3='Minimal' data_5='Normal' data_7='Verbose' data_9='Diagnostic' description='The logging level for the Cake Script' display='normal' label='Verbosity:'" />
+      <param name="mr.Cake.script" value="build.cake" spec="text description='The location of the Cake Script, relative to the root folder' display='normal' label='Cake Script:'" />
+      <param name="mr.Cake.target" value="Default" spec="text description='The name of the Target within the Cake Script to execute' display='normal' label='Target:'" />
+	  <param name="mr.Cake.configuration" value="" spec="text description='Configuration settings for Cake Script' display='normal' label='Configuration:'" />
+      <param name="mr.Cake.verbosity" value="Verbose" spec="select data_1='Quiet' data_3='Minimal' data_5='Normal' data_7='Verbose' data_9='Diagnostic' description='The logging level for the Cake Script' display='normal' label='Verbosity:'" />
+	  <param name="mr.Cake.showdescription" value="false" spec="checkbox description='RunConfiguration value to execute' display='normal' label='Show Description:' checkedValue='true' uncheckedValue='false'" />
+	  <param name="mr.Cake.dryrun" value="false" spec="checkbox description='Perform a dry run' display='normal' label='Dry run:' checkedValue='true' uncheckedValue='false'" />
       <param name="mr.Cake.arguments" value="" spec="text description='Additional arguments to pass to Cake Script' display='normal' label='Cake Arguments:'" />
     </parameters>
     <build-runners>
@@ -19,67 +22,197 @@
           <param name="teamcity.step.mode" value="default" />
           <param name="jetbrains_powershell_script_code"><![CDATA[[CmdletBinding()]
 Param(
-    [string]$script,
-    [string]$target,
-    [string]$verbosity,
-    [string]$arguments
+    [string]$Script = "%mr.Cake.script%",
+    [string]$Target = "%mr.Cake.target%",
+    [string]$Configuration = "%mr.Cake.configuration%",
+    [ValidateSet("Quiet", "Minimal", "Normal", "Verbose", "Diagnostic")]
+    [string]$Verbosity = "%mr.Cake.verbosity%",
+    [bool]$ShowDescription = %mr.Cake.showdescription%,
+    [Alias("WhatIf", "Noop")]
+    [bool]$DryRun = %mr.Cake.dryrun%,
+    [switch]$Experimental,
+    [switch]$Mono,
+    [switch]$SkipToolPackageRestore,
+    [string]$ScriptArgs = "%mr.Cake.arguments%"
 )
 
-Write-Verbose "Entering script $MyInvocation.MyCommand.Name";
-Write-Verbose "Parameter Values";
-foreach($key in $PSBoundParameters.Keys)
+[Reflection.Assembly]::LoadWithPartialName("System.Security") | Out-Null
+function MD5HashFile([string] $filePath)
 {
-    Write-Verbose ($key + ' = ' + $PSBoundParameters[$key]);
-}
+    if ([string]::IsNullOrEmpty($filePath) -or !(Test-Path $filePath -PathType Leaf))
+    {
+        return $null
+    }
 
-$repositoryPath = "%teamcity.build.workingDir%";
-$toolsPath = Join-Path $repositoryPath "tools";
-$packagePath = Join-Path $toolsPath "packages.config";
-$cakePath = Join-Path $toolsPath "Cake/Cake.exe";
-$nuGetPath = Join-Path $toolsPath "nuget.exe";
-
-# Check if there's a tools directory.
-if (!(Test-Path $toolsPath)) {
-    Write-Host "Creating tools directory...";
-    New-Item -Path $toolsPath -Type directory | out-null;
-    if (!(Test-Path $toolsPath)) {
-        Throw "Could not create tools directory.";
+    [System.IO.Stream] $file = $null;
+    [System.Security.Cryptography.MD5] $md5 = $null;
+    try
+    {
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $file = [System.IO.File]::OpenRead($filePath)
+        return [System.BitConverter]::ToString($md5.ComputeHash($file))
+    }
+    finally
+    {
+        if ($file -ne $null)
+        {
+            $file.Dispose()
+        }
     }
 }
 
-# Make sure NuGet exist.
-if (!(Test-Path $nuGetPath)) {
-  # Download NuGet.exe.
-  Write-Verbose "Downloading nuget.exe...";
-  (New-Object System.Net.WebClient).DownloadFile("http://dist.nuget.org/win-x86-commandline/latest/nuget.exe", $nuGetPath);
-  # Make sure it was properly downloaded.
-  if (!(Test-Path $nuGetPath)) {
-      Throw "Could not find nuget.exe";
-  }
+function GetProxyEnabledWebClient
+{
+    $wc = New-Object System.Net.WebClient
+    $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials        
+    $wc.Proxy = $proxy
+    return $wc
 }
 
-# Install prereqs from NuGet.
-Push-Location;
-Set-Location $toolsPath;
-if ((Test-Path $packagePath)) {
-  # Install tools in packages.config.
-  Write-Host "Restoring packages...";
-  Invoke-Expression "$nuGetPath install `"$packagePath`" -ExcludeVersion -OutputDirectory `"$toolsPath`"";
+Write-Host "Preparing to run build script..."
+
+if(!$PSScriptRoot){
+    $PSScriptRoot = Split-Path $MyInvocation.MyCommand.Path -Parent
 }
-if (!(Test-Path $cakePath)) {
-  # Install Cake if not part of packages.config.
-  Write-Host "Installing Cake...";
-  Invoke-Expression "$nuGetPath install Cake -ExcludeVersion -OutputDirectory `"$toolsPath`"";
+
+$TOOLS_DIR = Join-Path $PSScriptRoot "tools"
+$ADDINS_DIR = Join-Path $TOOLS_DIR "Addins"
+$MODULES_DIR = Join-Path $TOOLS_DIR "Modules"
+$NUGET_EXE = Join-Path $TOOLS_DIR "nuget.exe"
+$CAKE_EXE = Join-Path $TOOLS_DIR "Cake/Cake.exe"
+$NUGET_URL = "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
+$PACKAGES_CONFIG = Join-Path $TOOLS_DIR "packages.config"
+$PACKAGES_CONFIG_MD5 = Join-Path $TOOLS_DIR "packages.config.md5sum"
+$ADDINS_PACKAGES_CONFIG = Join-Path $ADDINS_DIR "packages.config"
+$MODULES_PACKAGES_CONFIG = Join-Path $MODULES_DIR "packages.config"
+
+# Make sure tools folder exists
+if ((Test-Path $PSScriptRoot) -and !(Test-Path $TOOLS_DIR)) {
+    Write-Verbose -Message "Creating tools directory..."
+    New-Item -Path $TOOLS_DIR -Type directory | out-null
 }
-Pop-Location;
+
+# Make sure that packages.config exist.
+if (!(Test-Path $PACKAGES_CONFIG)) {
+    Write-Verbose -Message "Downloading packages.config..."    
+    try {        
+        $wc = GetProxyEnabledWebClient
+        $wc.DownloadFile("https://cakebuild.net/download/bootstrapper/packages", $PACKAGES_CONFIG) } catch {
+        Throw "Could not download packages.config."
+    }
+}
+
+# Try find NuGet.exe in path if not exists
+if (!(Test-Path $NUGET_EXE)) {
+    Write-Verbose -Message "Trying to find nuget.exe in PATH..."
+    $existingPaths = $Env:Path -Split ';' | Where-Object { (![string]::IsNullOrEmpty($_)) -and (Test-Path $_ -PathType Container) }
+    $NUGET_EXE_IN_PATH = Get-ChildItem -Path $existingPaths -Filter "nuget.exe" | Select -First 1
+    if ($NUGET_EXE_IN_PATH -ne $null -and (Test-Path $NUGET_EXE_IN_PATH.FullName)) {
+        Write-Verbose -Message "Found in PATH at $($NUGET_EXE_IN_PATH.FullName)."
+        $NUGET_EXE = $NUGET_EXE_IN_PATH.FullName
+    }
+}
+
+# Try download NuGet.exe if not exists
+if (!(Test-Path $NUGET_EXE)) {
+    Write-Verbose -Message "Downloading NuGet.exe..."
+    try {
+        $wc = GetProxyEnabledWebClient
+        $wc.DownloadFile($NUGET_URL, $NUGET_EXE)
+    } catch {
+        Throw "Could not download NuGet.exe."
+    }
+}
+
+# Save nuget.exe path to environment to be available to child processed
+$ENV:NUGET_EXE = $NUGET_EXE
+
+# Restore tools from NuGet?
+if(-Not $SkipToolPackageRestore.IsPresent) {
+    Push-Location
+    Set-Location $TOOLS_DIR
+
+    # Check for changes in packages.config and remove installed tools if true.
+    [string] $md5Hash = MD5HashFile($PACKAGES_CONFIG)
+    if((!(Test-Path $PACKAGES_CONFIG_MD5)) -Or
+      ($md5Hash -ne (Get-Content $PACKAGES_CONFIG_MD5 ))) {
+        Write-Verbose -Message "Missing or changed package.config hash..."
+        Get-ChildItem -Exclude packages.config,nuget.exe,Cake.Bakery |
+        Remove-Item -Recurse
+    }
+
+    Write-Verbose -Message "Restoring tools from NuGet..."
+    $NuGetOutput = Invoke-Expression "&`"$NUGET_EXE`" install -ExcludeVersion -OutputDirectory `"$TOOLS_DIR`""
+
+    if ($LASTEXITCODE -ne 0) {
+        Throw "An error occurred while restoring NuGet tools."
+    }
+    else
+    {
+        $md5Hash | Out-File $PACKAGES_CONFIG_MD5 -Encoding "ASCII"
+    }
+    Write-Verbose -Message ($NuGetOutput | out-string)
+
+    Pop-Location
+}
+
+# Restore addins from NuGet
+if (Test-Path $ADDINS_PACKAGES_CONFIG) {
+    Push-Location
+    Set-Location $ADDINS_DIR
+
+    Write-Verbose -Message "Restoring addins from NuGet..."
+    $NuGetOutput = Invoke-Expression "&`"$NUGET_EXE`" install -ExcludeVersion -OutputDirectory `"$ADDINS_DIR`""
+
+    if ($LASTEXITCODE -ne 0) {
+        Throw "An error occurred while restoring NuGet addins."
+    }
+
+    Write-Verbose -Message ($NuGetOutput | out-string)
+
+    Pop-Location
+}
+
+# Restore modules from NuGet
+if (Test-Path $MODULES_PACKAGES_CONFIG) {
+    Push-Location
+    Set-Location $MODULES_DIR
+
+    Write-Verbose -Message "Restoring modules from NuGet..."
+    $NuGetOutput = Invoke-Expression "&`"$NUGET_EXE`" install -ExcludeVersion -OutputDirectory `"$MODULES_DIR`""
+
+    if ($LASTEXITCODE -ne 0) {
+        Throw "An error occurred while restoring NuGet modules."
+    }
+
+    Write-Verbose -Message ($NuGetOutput | out-string)
+
+    Pop-Location
+}
 
 # Make sure that Cake has been installed.
-if (!(Test-Path $cakePath)) {
-    Throw "Could not find Cake.exe at $cakePath";
+if (!(Test-Path $CAKE_EXE)) {
+    Throw "Could not find Cake.exe at $CAKE_EXE"
 }
 
+# Build Cake arguments
+$cakeArguments = @("$Script");
+if ($Target) { $cakeArguments += "-target=$Target" }
+if ($Configuration) { $cakeArguments += "-configuration=$Configuration" }
+if ($Verbosity) { $cakeArguments += "-verbosity=$Verbosity" }
+if ($ShowDescription) { $cakeArguments += "-showdescription" }
+if ($DryRun) { $cakeArguments += "-dryrun" }
+if ($Experimental) { $cakeArguments += "-experimental" }
+if ($Mono) { $cakeArguments += "-mono" }
+$cakeArguments += [string[]] -split $ScriptArgs
+
 # Start Cake
-Invoke-Expression "& `"$cakePath`" `"%mr.Cake.script%`" -target=`"%mr.Cake.target%`" -verbosity=`"%mr.Cake.verbosity%`" %mr.Cake.arguments%";]]></param>
+Write-Host "Running build script..."
+Write-Host "&$CAKE_EXE $cakeArguments"
+&$CAKE_EXE $cakeArguments
+exit $LASTEXITCODE
+]]></param>
         </parameters>
       </runner>
     </build-runners>
